@@ -1,4 +1,4 @@
-# Stage 1: Build the Next.js standalone app
+# Stage 1: Build the Next.js static files
 FROM oven/bun:latest AS frontend-builder
 
 WORKDIR /app
@@ -10,6 +10,9 @@ RUN bun install --frozen-lockfile
 # Copy all frontend files
 COPY . .
 
+# Remove api directory to prevent Next.js from detecting API routes
+RUN rm -rf api
+
 # Build argument for Clerk public key
 ARG NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
@@ -18,10 +21,10 @@ ENV NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
 # The NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is meant to be public (it starts with pk_)
 # It's safe to include in the build as it's designed for client-side use
 
-# Build the Next.js app (creates '.next/standalone' directory)
+# Build the Next.js app (creates 'out' directory with static files)
 RUN bun run build
 
-# Stage 2: Create the final container with both Next.js and Python
+# Stage 2: Create the final Python container
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -33,14 +36,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the FastAPI server
 COPY api/server.py .
 
-# Copy the Next.js standalone from builder stage
-COPY --from=frontend-builder /app/.next/standalone ./nextjs
+# Copy the Next.js static export from builder stage
+COPY --from=frontend-builder /app/out ./static
 
-# Create a startup script to run both servers
-RUN echo '#!/bin/sh\nnode nextjs/server.js &\nuvicorn server:app --host 0.0.0.0 --port 8000' > start.sh && chmod +x start.sh
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
-# Expose ports for Next.js (3000) and FastAPI (8000)
-EXPOSE 3000 8000
+# Expose port 8000 (FastAPI will serve everything)
+EXPOSE 8000
 
-# Start both servers
-CMD ["./start.sh"]
+# Start the FastAPI server
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
